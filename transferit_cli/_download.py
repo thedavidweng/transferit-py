@@ -66,6 +66,8 @@ def cmd_download(
     output_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
+    state: dict[str, object] = {"overall": None, "current": None, "single": False}
+
     if as_json:
         try:
             with Transferit() as tx:
@@ -76,7 +78,9 @@ def cmd_download(
                     force=force,
                 )
         except ValueError as ex:
-            raise click.BadParameter(str(ex))
+            raise click.BadParameter(str(ex)) from ex
+        except Exception as ex:  # surface, never crash silently
+            raise _download_error(ex, state) from ex
         click.echo(_json.dumps(result.to_json_dict(), indent=2, ensure_ascii=False))
         return
 
@@ -84,7 +88,6 @@ def cmd_download(
     with bytes_progress() as progress:
         # For a single-file transfer the overall bar IS the file bar (no
         # sub-rows); for folders we keep an overall total + per-file sub-bar.
-        state: dict[str, object] = {"overall": None, "current": None, "single": False}
 
         def on_start(files: list[TransferNode], total: int) -> None:
             status(
@@ -102,6 +105,7 @@ def cmd_download(
             state["overall"] = progress.add_task(label, total=total if total > 0 else 1)
 
         def on_file_start(node: TransferNode, out_path: Path) -> None:
+            state["current_name"] = node.name or node.handle
             if state["single"]:
                 return
             state["current"] = progress.add_task(
@@ -128,6 +132,7 @@ def cmd_download(
                 progress.update(state["overall"], completed=node.size or 1)
             else:
                 progress.advance(state["overall"], node.size or 0)
+            state["current_name"] = None
 
         def on_skip(node: TransferNode, out_path: Path) -> None:
             progress.console.print(
@@ -152,7 +157,9 @@ def cmd_download(
                     on_skip=on_skip,
                 )
         except ValueError as ex:
-            raise click.BadParameter(str(ex))
+            raise click.BadParameter(str(ex)) from ex
+        except Exception as ex:  # surface, never crash silently
+            raise _download_error(ex, state) from ex
 
     elapsed = time.monotonic() - started
     rate = (result.total_bytes / elapsed / 1e6) if elapsed and result else 0
@@ -176,3 +183,17 @@ def cmd_download(
     )
     body.add_row("elapsed", f"{elapsed:.1f}s  [dim]({rate:.2f} MB/s)[/dim]")
     render_transferit_panel(body)
+
+
+def _download_error(ex: Exception, state: dict[str, object]) -> click.ClickException:
+    """Wrap a mid-download failure with the name of the file being written.
+
+    The library removes partial files on failure, so a plain re-run retries
+    the remaining files.
+    """
+    name = state.get("current_name")
+    where = f" while writing {name!r}" if name else ""
+    message = f"download failed{where}: {ex}"
+    if name:
+        message += " (the partial file was removed; re-run to retry)"
+    return click.ClickException(message)

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import sys
 
+import httpx
+
 try:
     import click
 except ImportError as ex:  # pragma: no cover
@@ -59,6 +61,12 @@ def main() -> int:
         return 130
     except MegaAPIError as ex:
         CONSOLE.print(f"[red]error:[/red] {ex}")
+        return 1
+    except httpx.HTTPError as ex:
+        CONSOLE.print(f"[red]network error:[/red] {ex}")
+        return 1
+    except Exception as ex:  # surface, never crash silently
+        CONSOLE.print(f"[red]error:[/red] {type(ex).__name__}: {ex}")
         return 1
     return 0
 
